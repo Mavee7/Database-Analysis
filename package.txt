@@ -1,0 +1,417 @@
+1.
+FOR STAGING TABLE 
+-----------------------------------------------
+CREATE OR REPLACE PACKAGE STAGE_PACKAGE
+AS  
+    PROCEDURE PRCS_STAG_OFFICER;
+    PROCEDURE PRCS_STAG_REGISTER ;
+END STAGE_PACKAGE;
+
+CREATE OR REPLACE PACKAGE BODY STAGE_PACKAGE
+AS
+--extracting from wales officer
+PROCEDURE PRCS_STAG_OFFICER 
+IS  
+CURSOR CUR_STAGE_OFFICER 
+IS
+SELECT officer_id,first_name || ' ' || middle_name || ' ' ||last_name as officer_name,rank,'PS_wales' AS DB_SOURCE
+FROM OFFICER WHERE officer_id not in (SELECT OFFICER_ID FROM STAGE_OFFICER);
+VOFFICER CUR_STAGE_OFFICER%ROWTYPE;
+BEGIN
+OPEN CUR_STAGE_OFFICER;
+LOOP
+FETCH CUR_STAGE_OFFICER INTO VOFFICER;
+EXIT WHEN CUR_STAGE_OFFICER%NOTFOUND;
+INSERT INTO STAGE_OFFICER (OFFICER_ID,OFFICER_NAME,RANK,DB_SOURCE) VALUES (VOFFICER.OFFICER_ID,VOFFICER.OFFICER_NAME,VOFFICER.RANK,VOFFICER.DB_SOURCE);
+END LOOP;
+COMMIT;
+CLOSE CUR_STAGE_OFFICER;
+EXCEPTION
+WHEN NO_DATA_FOUND THEN
+DBMS_OUTPUT.PUT_LINE('RECORD NOT FOUND');
+END PRCS_STAG_OFFICER;
+
+
+PROCEDURE PRCS_STAG_REGISTER 
+IS  
+CURSOR CUR_STAGE_REGISTER 
+IS
+SELECT crime_id,crime_name,crime_status,reported_date, closed_date, police_id,'PS_wales' as DB_SOURCE
+FROM CRIME_REGISTER; 
+VREGISTER CUR_STAGE_REGISTER%ROWTYPE;
+BEGIN
+OPEN CUR_STAGE_REGISTER;
+LOOP
+FETCH CUR_STAGE_REGISTER INTO VREGISTER;
+EXIT WHEN CUR_STAGE_REGISTER%NOTFOUND;
+INSERT INTO STAGE_REGISTER (REGISTER_ID,CRIME_NAME,CRIME_STATUS,REGISTER_DATE,CLOSE_DATE,OFFICER_ID,WORK_START_DATE,WORK_END_DATE,STATION_ID,DB_SOURCE) 
+VALUES (VREGISTER.CRIME_ID,VREGISTER.CRIME_NAME,VREGISTER.CRIME_STATUS,VREGISTER.REPORTED_DATE,VREGISTER.CLOSED_DATE,VREGISTER.POLICE_ID,'','','',VREGISTER.DB_SOURCE);
+END LOOP;
+COMMIT;
+CLOSE CUR_STAGE_REGISTER;
+EXCEPTION
+WHEN NO_DATA_FOUND THEN
+DBMS_OUTPUT.PUT_LINE('RECORD NOT FOUND');
+END PRCS_STAG_REGISTER ;
+
+END STAGE_PACKAGE;
+
+DECLARE
+BEGIN
+    STAGE_PACKAGE.PRCS_STAG_OFFICER;
+    STAGE_PACKAGE.PRCS_STAG_REGISTER ;
+
+END;
+
+2.
+
+BAD GOOD TABLE
+
+CREATE OR REPLACE PACKAGE BADGOOD_PACKAGE
+AS  
+    PROCEDURE proc_filter_officer;
+    PROCEDURE proc_filter_register;
+    PROCEDURE  proc_filter_station;
+END BADGOOD_PACKAGE;
+
+CREATE OR REPLACE PACKAGE BODY BADGOOD_PACKAGE
+AS
+--extracting from wales officer
+PROCEDURE proc_filter_officer
+IS
+CURSOR cur_filter_officer
+IS
+SELECT OFFICER_ID,OFFICER_NAME,RANK,DB_SOURCE FROM STAGE_OFFICER;
+v_officer_id stage_officer.officer_id%type;
+v_officer_name stage_officer.officer_name%type;
+v_rank stage_officer.rank%type;
+v_db_source stage_officer.db_source%type;
+BEGIN
+OPEN cur_filter_officer;
+LOOP
+FETCH cur_filter_officer
+INTO
+ v_officer_id, v_officer_name,v_rank, v_db_source;
+EXIT WHEN cur_filter_officer%NOTFOUND;
+IF (v_officer_name IS NULL OR REGEXP_LIKE (v_officer_name, '[!%@*^#$&]')) THEN
+INSERT INTO BAD_STAGE_OFFICER (officer_id, officer_name, rank, error_identification_date, error_resolution_date, error_description,error_status,db_source)
+VALUES (v_officer_id,v_officer_name,v_rank, SYSDATE,NULL,'NULL VALUE','NOT FIXED',v_db_source);
+ELSE 
+INSERT INTO GOOD_STAGE_OFFICER (officer_id, officer_name,rank,db_source)
+VALUES (v_officer_id,v_officer_name, v_rank,v_db_source);
+END IF;
+END LOOP;
+COMMIT;
+CLOSE cur_filter_officer; 
+EXCEPTION
+WHEN no_data_found THEN 
+RAISE_APPLICATION_ERROR (-20001,'NO DATA FOUND');
+END proc_filter_officer;
+
+
+PROCEDURE proc_filter_register
+IS
+CURSOR cur_filter_register
+IS
+SELECT REGISTER_ID,CRIME_NAME,CRIME_STATUS,REGISTER_DATE,CLOSE_DATE,OFFICER_ID,WORK_START_DATE,WORK_END_DATE,STATION_ID,DB_SOURCE FROM STAGE_REGISTER;
+v_register_id stage_register.register_id%type;
+v_crime_name stage_register.crime_name%type;
+v_crime_status stage_register.crime_status%type;
+v_register_date stage_register.register_date%type;
+v_close_date stage_register.close_date%type;
+v_officer_id stage_register.officer_id%type;
+v_station_id stage_register.station_id%type;
+v_start_date stage_register.work_start_date%type;
+v_end_date stage_register.work_end_date%type;
+v_db_source stage_register.db_source%type;
+BEGIN
+OPEN cur_filter_register;
+LOOP
+FETCH cur_filter_register
+INTO
+ v_register_id, v_crime_name,v_crime_status,v_register_date,v_close_date,v_officer_id,v_start_date,v_end_date,v_station_id, v_db_source;
+EXIT WHEN cur_filter_register%NOTFOUND;
+IF (v_crime_name IS NULL OR v_register_date IS NULL OR v_crime_status  IS NULL OR (v_close_date is NULL AND v_crime_status = 'Closed')OR (v_officer_id IS NOT NULL AND v_crime_status = 'Closed') OR (v_officer_id IS NOT NULL AND v_start_date IS NULL)OR v_officer_id IS NULL OR v_station_id IS NULL OR v_register_date>v_close_date OR v_start_date>v_end_date) THEN
+INSERT INTO BAD_STAGE_REGISTER (register_id, crime_name, crime_status, register_date,close_date, officer_id, work_start_date, work_end_date, station_id,  error_identification_date, error_resolution_date, error_description,error_status,db_source)
+VALUES (v_register_id,v_crime_name, v_crime_status, v_register_date,v_close_date,v_officer_id,v_start_date,v_end_date,v_station_id, SYSDATE,NULL,'NULL VALUE','NOT FIXED',v_db_source);
+ELSE 
+INSERT INTO GOOD_STAGE_REGISTER (register_id, crime_name, crime_status, register_date,close_date, officer_id, work_start_date,work_end_date, station_id ,db_source)
+VALUES (v_register_id,v_crime_name, v_crime_status, v_register_date,v_close_date,v_officer_id,v_start_date,v_end_date,v_station_id, v_db_source);
+END IF;
+END LOOP;
+COMMIT;
+CLOSE cur_filter_register; 
+EXCEPTION
+WHEN no_data_found THEN 
+RAISE_APPLICATION_ERROR (-20001,'NO DATA FOUND');
+END proc_filter_register;
+
+PROCEDURE proc_filter_station
+IS
+CURSOR cur_filter_station
+IS
+SELECT STATION_ID,STATION_NAME,AREA_ID,DB_SOURCE FROM STAGE_STATION;
+v_station_id stage_station.station_id%type;
+v_station_name stage_station.station_name%type;
+v_area_id stage_station.area_id%type;
+v_db_source stage_station.db_source%type;
+BEGIN
+OPEN cur_filter_station;
+LOOP
+FETCH cur_filter_station
+INTO
+ v_station_id, v_station_name,v_area_id, v_db_source;
+EXIT WHEN cur_filter_station%NOTFOUND;
+IF (v_station_name IS NULL OR REGEXP_LIKE (v_station_name, '[!%^#$&]')) THEN
+INSERT INTO BAD_STAGE_STATION (station_id, station_name,area_id,  error_identification_date, error_resolution_date, error_description,error_status,db_source)
+VALUES (v_station_id,v_station_name,v_area_id, SYSDATE,NULL,'NULL VALUE','NOT FIXED',v_db_source);
+ELSE 
+INSERT INTO GOOD_STAGE_STATION (station_id, station_name,area_id,db_source)
+VALUES (v_station_id,v_station_name,v_area_id, v_db_source);
+END IF;
+END LOOP;
+COMMIT;
+CLOSE cur_filter_station; 
+EXCEPTION
+WHEN no_data_found THEN 
+RAISE_APPLICATION_ERROR (-20001,'NO DATA FOUND');
+END  proc_filter_station;
+
+END BADGOOD_PACKAGE;
+
+DECLARE
+BEGIN
+    BADGOOD_PACKAGE. proc_filter_officer;
+    BADGOOD_PACKAGE.proc_filter_register;
+    BADGOOD_PACKAGE. proc_filter_station;
+END;
+
+3. 
+
+RECLEAN 
+
+CREATE OR REPLACE PACKAGE RECLEAN_PACKAGE
+AS  
+    PROCEDURE clean_station;
+    PROCEDURE clean_register;
+    PROCEDURE  clean_officer;
+END RECLEAN_PACKAGE;
+
+CREATE OR REPLACE PACKAGE BODY RECLEAN_PACKAGE
+AS
+--extracting from wales officer
+PROCEDURE clean_station IS
+CURSOR cur_station
+IS 
+SELECT * FROM bad_stage_station ;
+BEGIN 
+FOR v in cur_station
+LOOP
+    IF (v.station_name is null)
+    THEN
+    UPDATE bad_stage_station SET STATION_NAME ='n/a' ,ERROR_RESOLUTION_DATE=sysdate, ERROR_STATUS='FIXED'
+    WHERE STATION_NAME IS NULL;
+    ELSE
+    UPDATE bad_stage_station SET STATION_NAME = regexp_replace(v.station_name,'[!%^#$&]'),
+    ERROR_RESOLUTION_DATE=CURRENT_TIMESTAMP, ERROR_STATUS='FIXED'
+    WHERE REGEXP_LIKE(STATION_NAME,'[!%^#$&]');
+    END IF;
+    
+END LOOP;
+END clean_station;
+
+
+PROCEDURE clean_register IS
+CURSOR cur_register
+IS 
+SELECT * FROM bad_stage_register ;
+BEGIN 
+FOR v in cur_register
+LOOP
+    IF (v.crime_name is null)
+    THEN
+    UPDATE bad_stage_register SET CRIME_NAME ='n/a' ,ERROR_RESOLUTION_DATE=sysdate, ERROR_STATUS='FIXED'
+    WHERE CRIME_NAME IS NULL;
+    ELSIF(v.officer_id is null)
+    THEN
+        UPDATE bad_stage_register SET officer_id =0 ,ERROR_RESOLUTION_DATE=sysdate, ERROR_STATUS='FIXED'
+        where officer_id is null;
+    ELSIF(v.station_id is null)
+    THEN
+        UPDATE bad_stage_register SET station_id =0 ,ERROR_RESOLUTION_DATE=sysdate, ERROR_STATUS='FIXED'
+        where station_id is null;
+    ELSIF(v.crime_status='CLOSED')
+    THEN
+    UPDATE bad_stage_register SET CLOSE_DATE=SYSDATE,
+    ERROR_RESOLUTION_DATE=CURRENT_TIMESTAMP, ERROR_STATUS='FIXED'
+    WHERE CRIME_STATUS='CLOSED';
+    
+   ELSIF(v.work_start_date>v.work_end_date)
+   THEN
+     UPDATE bad_stage_register SET  WORK_END_DATE=sysdate,
+    ERROR_RESOLUTION_DATE=CURRENT_TIMESTAMP, ERROR_STATUS='FIXED'
+    WHERE WORK_START_DATE>WORK_END_DATE;
+    ELSE 
+    UPDATE bad_stage_register SET CLOSE_DATE=SYSDATE,
+    ERROR_RESOLUTION_DATE=CURRENT_TIMESTAMP, ERROR_STATUS='FIXED'
+    WHERE REGISTER_DATE>CLOSE_DATE;
+    end if;
+END LOOP;
+END clean_register;
+
+PROCEDURE clean_officer IS
+CURSOR cur_officer
+IS 
+SELECT * FROM bad_stage_officer;
+BEGIN 
+FOR v in cur_officer
+LOOP
+    IF (v.officer_name is null)
+    THEN
+    UPDATE bad_stage_officer SET OFFICER_NAME ='n/a' ,ERROR_RESOLUTION_DATE=sysdate, ERROR_STATUS='FIXED'
+    WHERE OFFICER_NAME IS NULL;
+    ELSE
+    UPDATE bad_stage_officer SET OFFICER_NAME = regexp_replace(v.officer_name,'[!%@*^#$&]'),
+    ERROR_RESOLUTION_DATE=CURRENT_TIMESTAMP, ERROR_STATUS='FIXED'
+    WHERE REGEXP_LIKE(OFFICER_NAME,'[!%@*^#$&]');
+    END IF;
+END LOOP;
+END clean_officer;
+
+END RECLEAN_PACKAGE;
+
+DECLARE
+BEGIN
+    RECLEAN_PACKAGE. clean_station;
+    RECLEAN_PACKAGE.clean_register;
+    RECLEAN_PACKAGE. clean_officer;
+END;
+
+
+4.
+
+TRANSFORM 
+
+------------------------
+
+CREATE OR REPLACE PACKAGE TRANSFORM_PACKAGE
+AS  
+    PROCEDURE PRCS_TRANS_STATION;
+    PROCEDURE PRCS_TRANS_OFFICER;
+    PROCEDURE  PRCS_TRANS_REGISTER;
+END TRANSFORM_PACKAGE;
+
+CREATE OR REPLACE PACKAGE BODY TRANSFORM_PACKAGE
+AS
+--extracting from wales officer
+PROCEDURE PRCS_TRANS_STATION
+IS  
+CURSOR CUR_TRANS_STATION
+IS
+SELECT station_id, station_name,area_id,DB_SOURCE
+FROM GOOD_STAGE_STATION WHERE station_id not in (SELECT station_ID FROM TRANSFORM_OFFICER);
+VSTATION CUR_TRANS_STATION%ROWTYPE;
+BEGIN
+OPEN CUR_TRANS_STATION;
+LOOP
+FETCH CUR_TRANS_STATION INTO VSTATION;
+EXIT WHEN CUR_TRANS_STATION%NOTFOUND;
+INSERT INTO TRANSFORM_STATION (STATION_ID,STATION_NAME,AREA_ID,DB_SOURCE) VALUES (VSTATION.STATION_ID,VSTATION.STATION_NAME,VSTATION.AREA_ID,VSTATION.DB_SOURCE);
+END LOOP;
+COMMIT;
+CLOSE CUR_TRANS_STATION;
+EXCEPTION
+WHEN NO_DATA_FOUND THEN
+DBMS_OUTPUT.PUT_LINE('RECORD NOT FOUND');
+END PRCS_TRANS_STATION;
+
+
+PROCEDURE PRCS_TRANS_OFFICER 
+IS  
+CURSOR CUR_TRANS_OFFICER 
+IS
+SELECT officer_id, officer_name,RANK, DB_SOURCE
+FROM GOOD_STAGE_OFFICER WHERE officer_id not in (SELECT OFFICER_ID FROM TRANSFORM_OFFICER);
+VOFFICER CUR_TRANS_OFFICER%ROWTYPE;
+BEGIN
+OPEN CUR_TRANS_OFFICER;
+LOOP
+FETCH CUR_TRANS_OFFICER INTO VOFFICER;
+EXIT WHEN CUR_TRANS_OFFICER%NOTFOUND;
+INSERT INTO TRANSFORM_OFFICER (OFFICER_ID,OFFICER_NAME,RANK,DB_SOURCE) VALUES (VOFFICER.OFFICER_ID,VOFFICER.OFFICER_NAME,VOFFICER.RANK,VOFFICER.DB_SOURCE);
+END LOOP;
+COMMIT;
+CLOSE CUR_TRANS_OFFICER;
+EXCEPTION
+WHEN NO_DATA_FOUND THEN
+DBMS_OUTPUT.PUT_LINE('RECORD NOT FOUND');
+END PRCS_TRANS_OFFICER;
+
+PROCEDURE PRCS_TRANS_REGISTER 
+IS  
+CURSOR CUR_TRANS_REGISTER 
+IS
+SELECT register_id,crime_name,crime_status,register_date, close_date, officer_id,work_start_date,work_end_date,station_id,DB_SOURCE
+FROM GOOD_STAGE_REGISTER; 
+VREGISTER CUR_TRANS_REGISTER%ROWTYPE;
+BEGIN
+OPEN CUR_TRANS_REGISTER;
+LOOP
+FETCH CUR_TRANS_REGISTER INTO VREGISTER;
+EXIT WHEN CUR_TRANS_REGISTER%NOTFOUND;
+INSERT INTO TRANSFORM_REGISTER (REGISTER_ID,CRIME_NAME,CRIME_STATUS,REGISTER_DATE,CLOSE_DATE,OFFICER_ID,WORK_START_DATE,WORK_END_DATE,STATION_ID,DB_SOURCE) 
+VALUES (VREGISTER.REGISTER_ID,VREGISTER.CRIME_NAME,VREGISTER.CRIME_STATUS,VREGISTER.REGISTER_DATE,VREGISTER.CLOSE_DATE,VREGISTER.OFFICER_ID,VREGISTER.WORK_START_DATE,VREGISTER.WORK_END_DATE,VREGISTER.STATION_ID,VREGISTER.DB_SOURCE);
+END LOOP;
+COMMIT;
+CLOSE CUR_TRANS_REGISTER;
+EXCEPTION
+WHEN NO_DATA_FOUND THEN
+DBMS_OUTPUT.PUT_LINE('RECORD NOT FOUND');
+END PRCS_TRANS_REGISTER;
+
+END TRANSFORM_PACKAGE;
+
+DECLARE
+BEGIN
+    TRANSFORM_PACKAGE.PRCS_TRANS_STATION;
+    TRANSFORM_PACKAGE.PRCS_TRANS_OFFICER;
+    TRANSFORM_PACKAGE. PRCS_TRANS_REGISTER;
+END;
+
+-----------------
+Fact 
+
+
+CREATE OR REPLACE PACKAGE DIM_PACKAGE
+AS  
+    PROCEDURE proc_dim_time;
+END DIM_PACKAGE;
+
+CREATE OR REPLACE PACKAGE BODY DIM_PACKAGE
+AS
+--extracting from wales officer
+PROCEDURE proc_dim_time
+IS
+BEGIN
+    MERGE INTO DIM_TIME dt
+    USING
+    (SELECT DISTINCT 
+    to_char(CLOSE_DATE,'YYYY') YEAR,
+    to_char(CLOSE_DATE,'MM') MONTH,
+    to_char(CLOSE_DATE,'DD') DAY
+    FROM TRANSFORM_REGISTER) t
+    ON(dt.YEAR = t.year)
+    WHEN NOT MATCHED THEN
+    INSERT (YEAR, MONTH,DAY)
+    VALUES (t.YEAR, t.MONTH,t.DAY);
+END  proc_dim_time;
+
+
+END DIM_PACKAGE;
+
+DECLARE
+BEGIN
+    DIM_PACKAGE.proc_dim_time;
+END;
+
+
